@@ -1,9 +1,9 @@
-name: Auto 5-Hour Cleanup (北京时间)
+name: Auto 6-Hour Cleanup (北京时间)
 
 on:
   schedule:
-    # 每5小时运行一次（北京时间）
-    - cron: '0 */5 * * *'
+    # 每6小时运行一次（北京时间）
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 jobs:
