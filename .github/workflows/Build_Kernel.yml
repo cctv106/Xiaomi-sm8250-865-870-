@@ -62,6 +62,10 @@ on:
         description: "分支名/自定义版本标识"
         required: false
         default: "susfs-main/Numbersf"
+        
+  # 添加定时构建触发器
+  schedule:
+    - cron: '0 */3 * * *'  # 每3小时运行一次（UTC时间）
 
 permissions:
   contents: write
@@ -72,10 +76,38 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      # 添加输出以传递定时构建参数
+      build_params: ${{ steps.set-build-params.outputs.build_params }}
     steps:
+      # 设置定时构建的默认参数
+      - name: Set build parameters for scheduled runs
+        id: set-build-params
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          echo "target_devices=all" >> $GITHUB_OUTPUT
+          echo "system_version=miui" >> $GITHUB_OUTPUT
+          echo "kernelsu_version=sukisu-ultra" >> $GITHUB_OUTPUT
+          echo "additional_function=susfs-kpm" >> $GITHUB_OUTPUT
+          echo "KSU_META=susfs-main/敲击岁月" >> $GITHUB_OUTPUT
+          echo "build_params=true" >> $GITHUB_OUTPUT
+          
+      # 为手动触发设置参数
+      - name: Set parameters for manual runs
+        id: set-manual-params
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          echo "target_devices=${{ github.event.inputs.target_devices || 'munch' }}" >> $GITHUB_OUTPUT
+          echo "system_version=${{ github.event.inputs.system_version || 'miui' }}" >> $GITHUB_OUTPUT
+          echo "kernelsu_version=${{ github.event.inputs.kernelsu_version || 'ksu' }}" >> $GITHUB_OUTPUT
+          echo "additional_function=${{ github.event.inputs.additional_function || 'no' }}" >> $GITHUB_OUTPUT
+          echo "KSU_META=${{ github.event.inputs.KSU_META || 'susfs-main/Numbersf' }}" >> $GITHUB_OUTPUT
+          echo "build_params=true" >> $GITHUB_OUTPUT
+
+      # 设置设备矩阵
       - id: set-matrix
         run: |
-          DEVICES="${{ github.event.inputs.target_devices }}"
+          # 使用前面步骤设置的参数
+          DEVICES="${{ steps.set-manual-params.outputs.target_devices || steps.set-build-params.outputs.target_devices }}"
           if [ "$DEVICES" == "all" ]; then
             DEVICES="munch,lmi,umi,psyche,thyme,cmi,cas,apollo,alioth,elish,enuma,dagu,pipa"
           fi
@@ -92,6 +124,12 @@ jobs:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
+      
+      # 使用准备好的参数
+      TARGET_SYSTEM: ${{ needs.prepare.outputs.system_version || 'miui' }}
+      KERNELSU_VER: ${{ needs.prepare.outputs.kernelsu_version || 'ksu' }}
+      ADD_FUNC: ${{ needs.prepare.outputs.additional_function || 'no' }}
+      KSU_META: ${{ needs.prepare.outputs.KSU_META || 'susfs-main/Numbersf' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -133,11 +171,11 @@ jobs:
           key: ${{ runner.os }}-ccache-${{ matrix.device }}-${{ github.sha }}
           restore-keys: ${{ runner.os }}-ccache-${{ matrix.device }}-
 
-      # 新增：添加SukiSU Ultra支持
+      # 添加SukiSU Ultra支持
       - name: Add SukiSU Ultra
-        if: ${{ github.event.inputs.kernelsu_version == 'sukisu-ultra' }}
+        if: ${{ env.KERNELSU_VER == 'sukisu-ultra' }}
         run: |
-          META="${{ github.event.inputs.KSU_META }}"
+          META="${{ env.KSU_META }}"
           BRANCH_NAME="${META%%/*}"
           CUSTOM_TAG="${META#*/}"
           echo "分支名: $BRANCH_NAME"
@@ -175,9 +213,9 @@ jobs:
         run: |
           sed -i "s|TOOLCHAIN_PATH=\$HOME/toolchain/proton-clang/bin|TOOLCHAIN_PATH=$(pwd)/toolchain/proton-clang/bin|" build.sh
           bash build.sh "${{ matrix.device }}" \
-            "${{ github.event.inputs.kernelsu_version }}" \
-            "${{ github.event.inputs.additional_function }}" \
-            "${{ github.event.inputs.system_version }}"
+            "${{ env.KERNELSU_VER }}" \
+            "${{ env.ADD_FUNC }}" \
+            "${{ env.TARGET_SYSTEM }}"
 
       - name: Generate Device Name Mapping
         id: device_mapping
@@ -232,7 +270,19 @@ jobs:
         run: |
           DEVICE_NAMES=$(ls release | cut -d'-' -f1 | sort -u | tr '\n' ',' | sed 's/,$//')
           echo "device_names=$DEVICE_NAMES" >> $GITHUB_OUTPUT
-          echo "RELEASE_BODY=## Kernel Build\n- **Devices:** $DEVICE_NAMES\n- **System:** ${{ github.event.inputs.system_version }}\n- **KernelSU:** ${{ github.event.inputs.kernelsu_version }}\n- **Build Date:** $(date +%Y-%m-%d)" >> $GITHUB_ENV
+          
+          # 获取构建参数
+          if [ "${{ github.event_name }}" == "schedule" ]; then
+            SYSTEM_VERSION="miui"
+            KERNELSU_VERSION="sukisu-ultra"
+            ADDITIONAL_FUNCTION="susfs-kpm"
+          else
+            SYSTEM_VERSION="${{ github.event.inputs.system_version || 'miui' }}"
+            KERNELSU_VERSION="${{ github.event.inputs.kernelsu_version || 'ksu' }}"
+            ADDITIONAL_FUNCTION="${{ github.event.inputs.additional_function || 'no' }}"
+          fi
+          
+          echo "RELEASE_BODY=## Kernel Build\n- **Devices:** $DEVICE_NAMES\n- **System:** $SYSTEM_VERSION\n- **KernelSU:** $KERNELSU_VERSION\n- **Additional:** $ADDITIONAL_FUNCTION\n- **Build Date:** $(date +%Y-%m-%d)" >> $GITHUB_ENV
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
