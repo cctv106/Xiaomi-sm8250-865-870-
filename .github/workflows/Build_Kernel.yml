@@ -65,7 +65,7 @@ on:
         
   # 添加定时构建触发器
   schedule:
-    - cron: '0 */3 * * *'  # 每3小时运行一次（UTC时间）
+  - cron: '0 0,12 * * *'  # 每天北京时间0点和12点各运行一次
 
 permissions:
   contents: write
