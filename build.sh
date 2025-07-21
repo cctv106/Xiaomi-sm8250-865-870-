@@ -5,8 +5,13 @@
 # Ensure the script exits on error
 set -e
 
+if [ -n "$KSU_VERSION_FULL" ]; then
+    echo "使用自定义KSU版本: $KSU_VERSION_FULL"
+    KSU_ZIP_STR="$KSU_VERSION_FULL"
+fi
+
 TOOLCHAIN_PATH=$HOME/toolchain/proton-clang/bin
-GIT_COMMIT_ID=$(git rev-parse --short=8 HEAD)
+GIT_COMMIT_ID=$(git rev-parse --short=13 HEAD)
 TARGET_DEVICE=$1
 
 if [ -z "$1" ]; then
@@ -19,8 +24,6 @@ if [ -z "$1" ]; then
     echo "    bash build.sh umi ksu"
     exit 1
 fi
-
-
 
 if [ ! -d $TOOLCHAIN_PATH ]; then
     echo "TOOLCHAIN_PATH [$TOOLCHAIN_PATH] does not exist."
@@ -46,7 +49,6 @@ if ! command -v clang >/dev/null 2>&1; then
     exit 1
 fi
 
-
 # Enable ccache for speed up compiling 
 export CCACHE_DIR="$HOME/.cache/ccache_mikernel" 
 export CC="ccache gcc"
@@ -54,9 +56,7 @@ export CXX="ccache g++"
 export PATH="/usr/lib/ccache:$PATH"
 echo "CCACHE_DIR: [$CCACHE_DIR]"
 
-
 MAKE_ARGS="ARCH=arm64 SUBARCH=arm64 O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
-
 
 if [ "$1" == "j1" ]; then
     make $MAKE_ARGS -j1
@@ -74,7 +74,6 @@ if [ ! -f "arch/arm64/configs/${TARGET_DEVICE}_defconfig" ]; then
     ls arch/arm64/configs/*_defconfig
     exit 1
 fi
-
 
 # Check clang is existing.
 echo "[clang --version]:"
@@ -106,39 +105,48 @@ else
     echo "The additional function is not enabled"
 fi
 
+# 修改：优先使用自定义KSU版本标识
 if [ "$KSU_VERSION" == "ksu" ]; then
-    KSU_ZIP_STR=KernelSU
+    KSU_ZIP_STR=${KSU_ZIP_STR:-"KernelSU"}
     echo "KSU is enabled"
     curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
 elif [[ "$KSU_VERSION" == "ksu" && "$SuSFS_ENABLE" -eq 1 ]]; then
     echo "Official KernelSU not supported SuSFS"
     exit 1
 elif [[ "$KSU_VERSION" == "rksu" && "$SuSFS_ENABLE" -eq 1 ]]; then
-    KSU_ZIP_STR=RKSU_SuSFS
+    KSU_ZIP_STR=${KSU_ZIP_STR:-"RKSU_SuSFS"}
     echo "RKSU && SuSFS is enabled"
     curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -s susfs-v1.5.5
 elif [ "$KSU_VERSION" == "rksu" ]; then
-    KSU_ZIP_STR=RKSU
+    KSU_ZIP_STR=${KSU_ZIP_STR:-"RKSU"}
     echo "RKSU is enabled"
     curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -s main
 elif [[ "$KSU_VERSION" == "sukisu" && "$SuSFS_ENABLE" -eq 1 ]]; then
-    KSU_ZIP_STR=SukiSU_SuSFS
+    KSU_ZIP_STR=${KSU_ZIP_STR:-"SukiSU_SuSFS"}
     echo "SukiSU && SuSFS is enabled"
     curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s susfs-dev
 elif [ "$KSU_VERSION" == "sukisu" ]; then
-    KSU_ZIP_STR=SukiSU
+    KSU_ZIP_STR=${KSU_ZIP_STR:-"SukiSU"}
     echo "SukiSU is enabled"
     curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s dev
 elif [[ "$KSU_VERSION" == "sukisu-ultra" && "$SuSFS_ENABLE" -eq 1 ]]; then
-    KSU_ZIP_STR="SukiSU-Ultra"
+    # 优先使用自定义版本
+    KSU_ZIP_STR=${KSU_ZIP_STR:-"SukiSU-Ultra_SuSFS"}
     echo "SukiSU-Ultra && SuSFS is enabled"
-    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+    # 检查是否已经设置过KernelSU
+    if [ ! -d "$KERNEL_SRC/KernelSU" ]; then
+        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+    fi
 elif [ "$KSU_VERSION" == "sukisu-ultra" ]; then
-    KSU_ZIP_STR=SukiSU-Ultra
+    # 优先使用自定义版本
+    KSU_ZIP_STR=${KSU_ZIP_STR:-"SukiSU-Ultra"}
     echo "SukiSU-Ultra is enabled"
-    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
+    # 检查是否已经设置过KernelSU
+    if [ ! -d "$KERNEL_SRC/KernelSU" ]; then
+        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
+    fi
 else
-    KSU_ZIP_STR=NoKernelSU
+    KSU_ZIP_STR=${KSU_ZIP_STR:-"NoKernelSU"}
     echo "KSU is disabled"
 fi
 
@@ -150,22 +158,20 @@ rm -rf anykernel/
 echo "Clone AnyKernel3 for packing kernel (repo: https://github.com/liyafe1997/AnyKernel3)"
 git clone https://github.com/liyafe1997/AnyKernel3 -b kona --single-branch --depth=1 anykernel
 
-# Add date to local version
-local_version_str="-perf"
-local_version_date_str="-$(date +%Y%m%d)-${GIT_COMMIT_ID}-perf"
-
-sed -i "s/${local_version_str}/${local_version_date_str}/g" arch/arm64/configs/${TARGET_DEVICE}_defconfig
-
-
 Build_AOSP(){
 # ------------- Building for AOSP -------------
     echo "Building for AOSP......"
     make $MAKE_ARGS ${TARGET_DEVICE}_defconfig
 
     SET_CONFIG
+ 
+    (echo > .scmversion && scripts/config --file out/.config -d LOCALVERSION_AUTO --set-str CONFIG_LOCALVERSION "-${GIT_COMMIT_ID}" >/dev/null)
     
-    make $MAKE_ARGS -j$(nproc)
+    export KBUILD_BUILD_TIMESTAMP="$(date '+%a %b %d %H:%M:%S CST 2023')"
 
+
+    make $MAKE_ARGS -j$(nproc)
+    
     Image_Repack
 
     echo "Build for AOSP finished."
@@ -243,6 +249,11 @@ Build_MIUI(){
 
     SET_CONFIG MIUI
 
+    (echo > .scmversion && scripts/config --file out/.config -d LOCALVERSION_AUTO --set-str CONFIG_LOCALVERSION "-${GIT_COMMIT_ID}" >/dev/null)
+    
+    export KBUILD_BUILD_TIMESTAMP="$(date '+%a %b %d %H:%M:%S CST 2023')"
+
+
     make $MAKE_ARGS -j$(nproc)
 
     Image_Repack MIUI
@@ -287,7 +298,7 @@ SET_CONFIG(){
     else
         scripts/config --file out/.config -d KSU
     fi
-
+   
     # Enable the KSU_MANUAL_HOOK for sukisu-ultra
     if [ "$KSU_VERSION" == "sukisu-ultra" ];then
         scripts/config --file out/.config -e KSU_MANUAL_HOOK
