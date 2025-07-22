@@ -118,7 +118,7 @@ if [ "$KSU_VERSION" == "sukisu-ultra" ]; then
     cd KernelSU
     KSU_API_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/$BRANCH_NAME/kernel/Makefile" | \
         grep -m1 "KSU_VERSION_API :=" | awk -F'= ' '{print $2}' | tr -d '[:space:]')
-    [[ -z "$KSU_API_VERSION" ]] && KSU_API_VERSION="3.1.7"
+    [[ -z "$KSU_API_VERSION" ]] && KSU_API_VERSION="3.1.8"
     
     echo "KSU_API_VERSION=$KSU_API_VERSION"
     
