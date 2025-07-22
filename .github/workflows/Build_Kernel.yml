@@ -88,7 +88,7 @@ jobs:
           echo "system_version=miui" >> $GITHUB_OUTPUT
           echo "kernelsu_version=sukisu-ultra" >> $GITHUB_OUTPUT
           echo "additional_function=susfs-kpm" >> $GITHUB_OUTPUT
-          echo "KSU_META=susfs-main/酷安@宝明v" >> $GITHUB_OUTPUT
+          echo "KSU_META=susfs-main/敲击岁月" >> $GITHUB_OUTPUT
           echo "build_params=true" >> $GITHUB_OUTPUT
           
       # 为手动触发设置参数
@@ -186,7 +186,7 @@ jobs:
 
           KSU_API_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/$BRANCH_NAME/kernel/Makefile" | \
             grep -m1 "KSU_VERSION_API :=" | awk -F'= ' '{print $2}' | tr -d '[:space:]')
-          [[ -z "$KSU_API_VERSION" ]] && KSU_API_VERSION="3.1.7"
+          [[ -z "$KSU_API_VERSION" ]] && KSU_API_VERSION="3.1.8"
 
           echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
 
