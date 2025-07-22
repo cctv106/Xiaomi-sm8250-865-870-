@@ -96,7 +96,7 @@ jobs:
       CCACHE_DIR: ~/.ccache/${{ matrix.device }}
 
     steps:
-      - name: Check Disk Space (Pre-build)
+      - name: Check Disk Space
         run: df -h
 
       - name: Maximize Build Space
@@ -109,7 +109,7 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      - name: Create and Enable 3G Swap
+      - name: Create Swap
         run: |
           sudo swapoff -a
           sudo fallocate -l 3G /swapfile
@@ -118,7 +118,7 @@ jobs:
           sudo swapon /swapfile
           free -h
 
-      - name: Configure APTC
+      - name: Configure APT Cache
         run: |
           APT_CACHE_DIR="$HOME/apt-cache"
           mkdir -p "$APT_CACHE_DIR"/{archives,lists/partial}
@@ -129,7 +129,7 @@ jobs:
           echo "Acquire::Languages \"none\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
           sudo chown -R $USER:$USER "$APT_CACHE_DIR"
 
-      - name: Set APT Cache
+      - name: Cache APT
         uses: actions/cache@v4
         with:
           path: ${{ env.HOME }}/apt-cache
@@ -137,7 +137,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-apt-
 
-      - name: Set ccache Environment
+      - name: Set ccache
         run: |
           echo "CCACHE_DIR=$HOME/.ccache/${{ matrix.device }}" >> $GITHUB_ENV
           mkdir -p "$HOME/.ccache/${{ matrix.device }}"
@@ -176,7 +176,7 @@ jobs:
           rm -rf toolchain/proton-clang
           echo "Cleaned workspace"
 
-      - name: Cache Proton Clang
+      - name: Cache Toolchain
         uses: actions/cache@v4
         id: clang-cache
         with:
@@ -205,41 +205,29 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$BRANCH_NAME"
           cd ./KernelSU
 
-          # 获取KSU_API_VERSION - 使用更可靠的解析方法
           KSU_API_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/$BRANCH_NAME/kernel/Makefile" | 
             awk -F':=' '/KSU_VERSION_API[[:space:]]:=/{print $2}' | tr -d '[:space:]' || true)
           
-          # 版本验证 - 添加详细错误处理
           if [[ -z "$KSU_API_VERSION" ]]; then
-            echo "::warning::Failed to parse KSU_API_VERSION, using default"
             KSU_API_VERSION="3.1.8"
           fi
           
-          # 确保版本格式有效
           if [[ ! "$KSU_API_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::warning::Invalid KSU_API_VERSION format: $KSU_API_VERSION, using default"
             KSU_API_VERSION="3.1.8"
           fi
           
           echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
 
-          GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-          echo "GIT_HASH=$GIT_HASH"
-
-          # 构建版本字符串 - 添加空值保护
           if [[ -z "$CUSTOM_TAG" || "$CUSTOM_TAG" == "$BRANCH_NAME" ]]; then
-            VERSION_FULL="v${KSU_API_VERSION}-${GIT_HASH}@${BRANCH_NAME}"
+            VERSION_FULL="v${KSU_API_VERSION}@${BRANCH_NAME}"
           else
-            VERSION_FULL="v${KSU_API_VERSION}-${CUSTOM_TAG}@${BRANCH_NAME}[${GIT_HASH}]"
+            VERSION_FULL="v${KSU_API_VERSION}-${CUSTOM_TAG}@${BRANCH_NAME}"
           fi
 
-          # 更新Makefile中的版本信息 - 使用更可靠的方法
-          # 删除旧的定义
           sed -i '/define get_ksu_version_full/,/endef/d' kernel/Makefile
           sed -i '/KSU_VERSION_API :=/d' kernel/Makefile
           sed -i '/KSU_VERSION_FULL :=/d' kernel/Makefile
           
-          # 在REPO_OWNER行后插入新定义
           awk -v version_full="$VERSION_FULL" -v api_version="$KSU_API_VERSION" '
             /REPO_OWNER :=/ {
                 print $0
@@ -265,36 +253,26 @@ jobs:
             }
           ' kernel/Makefile > kernel/Makefile.tmp && mv kernel/Makefile.tmp kernel/Makefile
 
-          # 计算KSU版本号
           MAIN_COUNT=$(git rev-list --count main 2>/dev/null || echo "13000")
           KSU_VERSION=$(($MAIN_COUNT + 10700))
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
 
-          echo "::group::Final Makefile preview"
           grep -A10 "REPO_OWNER" kernel/Makefile
-          echo "::endgroup::"
           
           cd ..
 
       - name: Build Kernel
         run: |
-          # 确保脚本可执行
           chmod +x build.sh
-          
-          # 更新工具链路径
           sed -i "s|TOOLCHAIN_PATH=\$HOME/toolchain/proton-clang/bin|TOOLCHAIN_PATH=$(pwd)/toolchain/proton-clang/bin|" build.sh
-          
-          # 执行构建
           bash build.sh "${{ matrix.device }}" \
             "${{ github.event.inputs.kernelsu_version }}" \
             "${{ github.event.inputs.additional_function }}" \
             "${{ github.event.inputs.system_version }}" \
             "${{ env.KSU_API_VERSION }}"
-          
-          # 检查缓存状态
           ccache -s
 
-      - name: Generate Device Name Mapping
+      - name: Map Device Name
         id: device_mapping
         run: |
           declare -A device_map=(
@@ -314,30 +292,20 @@ jobs:
           echo "device_name=$DEVICE_NAME" >> $GITHUB_OUTPUT
           echo "DEVICE_NAME=$DEVICE_NAME" >> $GITHUB_ENV
 
-      - name: Find and Rename Kernel ZIP
+      - name: Rename Artifact
         run: |
-          # 查找构建生成的ZIP文件
           ZIP_FILE=$(find . -name "Kernel_*_${{ matrix.device }}_*.zip" -print -quit)
-          
-          # 回退查找AnyKernel3生成的ZIP
           if [ -z "$ZIP_FILE" ]; then
             ZIP_FILE=$(find . -name "AnyKernel3_${{ matrix.device }}*.zip" -print -quit)
           fi
-          
-          # 如果仍然找不到文件，报错退出
           if [ -z "$ZIP_FILE" ]; then
             echo "::error::No kernel file found for ${{ matrix.device }}!"
             exit 1
           fi
-          
-          # 重命名并设置环境变量
           DEVICE_NAME="${{ env.DEVICE_NAME }}"
           NEW_NAME="AnyKernel3-$DEVICE_NAME.zip"
           mv "$ZIP_FILE" "$NEW_NAME"
           echo "ZIP_PATH=$(pwd)/$NEW_NAME" >> $GITHUB_ENV
-
-      - name: Check Disk Space (Post-build)
-        run: df -h
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -354,7 +322,7 @@ jobs:
         with:
           path: artifacts
           
-      - name: Prepare Release Files
+      - name: Prepare Release
         run: |
           mkdir -p release
           find artifacts -name '*.zip' -exec cp {} release \;
@@ -365,14 +333,11 @@ jobs:
           DEVICE_NAMES=$(ls release | cut -d'-' -f1 | sort -u | tr '\n' ',' | sed 's/,$//')
           echo "device_names=$DEVICE_NAMES" >> $GITHUB_OUTPUT
           
-          RELEASE_BODY=$(cat <<EOF
-          ## Kernel Build
+          RELEASE_BODY="## Kernel Build
           - **Devices:** $DEVICE_NAMES
           - **System:** ${{ github.event.inputs.system_version }}
           - **KernelSU:** ${{ github.event.inputs.kernelsu_version }}
-          - **Build Date:** $(date +%Y-%m-%d)
-          EOF
-          )
+          - **Build Date:** $(date +%Y-%m-%d)"
           echo "RELEASE_BODY<<EOF" >> $GITHUB_ENV
           echo "$RELEASE_BODY" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
@@ -387,8 +352,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
-      - name: Clean workspace
+      - name: Cleanup
         if: ${{ always() }}
-        run: |
-          rm -rf artifacts release
-          echo "Cleaned workspace after release"
+        run: rm -rf artifacts release
