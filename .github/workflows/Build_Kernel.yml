@@ -56,16 +56,12 @@ on:
           - 'kpm'
           - 'susfs-kpm'
           - 'no'
-
-      KSU_META:
-        type: string
-        description: "分支名/自定义版本标识"
+          
+      kernelsu_meta:
+        description: 'Branch/Custom tag for sukisu-ultra'
         required: false
-        default: "susfs-main/Numbersf"
-        
-  # 添加定时构建触发器
-  schedule:
-  - cron: '0 0,12 * * *'  # 每天北京时间0点和12点各运行一次
+        default: 'susfs-main/Numbersf'
+        type: string
 
 permissions:
   contents: write
@@ -76,33 +72,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      build_params: ${{ steps.set-build-params.outputs.build_params }}
     steps:
-      - name: Set build parameters for scheduled runs
-        id: set-build-params
-        if: ${{ github.event_name == 'schedule' }}
-        run: |
-          echo "target_devices=all" >> $GITHUB_OUTPUT
-          echo "system_version=miui" >> $GITHUB_OUTPUT
-          echo "kernelsu_version=sukisu-ultra" >> $GITHUB_OUTPUT
-          echo "additional_function=susfs-kpm" >> $GITHUB_OUTPUT
-          echo "KSU_META=susfs-main/Numbersf" >> $GITHUB_OUTPUT
-          echo "build_params=true" >> $GITHUB_OUTPUT
-          
-      - name: Set parameters for manual runs
-        id: set-manual-params
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: |
-          echo "target_devices=${{ github.event.inputs.target_devices || 'munch' }}" >> $GITHUB_OUTPUT
-          echo "system_version=${{ github.event.inputs.system_version || 'miui' }}" >> $GITHUB_OUTPUT
-          echo "kernelsu_version=${{ github.event.inputs.kernelsu_version || 'ksu' }}" >> $GITHUB_OUTPUT
-          echo "additional_function=${{ github.event.inputs.additional_function || 'no' }}" >> $GITHUB_OUTPUT
-          echo "KSU_META=${{ github.event.inputs.KSU_META || 'susfs-main/Numbersf' }}" >> $GITHUB_OUTPUT
-          echo "build_params=true" >> $GITHUB_OUTPUT
-
       - id: set-matrix
         run: |
-          DEVICES="${{ steps.set-manual-params.outputs.target_devices || steps.set-build-params.outputs.target_devices }}"
+          DEVICES="${{ github.event.inputs.target_devices }}"
           if [ "$DEVICES" == "all" ]; then
             DEVICES="munch,lmi,umi,psyche,thyme,cmi,cas,apollo,alioth,elish,enuma,dagu,pipa"
           fi
@@ -119,23 +92,85 @@ jobs:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
-      TARGET_SYSTEM: ${{ needs.prepare.outputs.system_version || 'miui' }}
-      KERNELSU_VER: ${{ needs.prepare.outputs.kernelsu_version || 'ksu' }}
-      ADD_FUNC: ${{ needs.prepare.outputs.additional_function || 'no' }}
-      KSU_META: ${{ needs.prepare.outputs.KSU_META || 'susfs-main/Numbersf' }}
+      CCACHE_MAXSIZE: 8G
+      CCACHE_DIR: ~/.ccache/${{ matrix.device }}
 
     steps:
-      - uses: actions/checkout@v4
-      
+      - name: Check Disk Space (Pre-build)
+        run: df -h
+
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: Create and Enable 3G Swap
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 3G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Configure APTC
+        run: |
+          APT_CACHE_DIR="$HOME/apt-cache"
+          mkdir -p "$APT_CACHE_DIR"/{archives,lists/partial}
+          echo "Dir::Cache \"$APT_CACHE_DIR\";" | sudo tee /etc/apt/apt.conf.d/90user-cache
+          echo "Dir::Cache::archives \"$APT_CACHE_DIR/archives\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          echo "Dir::State::lists \"$APT_CACHE_DIR/lists\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          echo "Acquire::Check-Valid-Until \"false\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          echo "Acquire::Languages \"none\";" | sudo tee -a /etc/apt/apt.conf.d/90user-cache
+          sudo chown -R $USER:$USER "$APT_CACHE_DIR"
+
+      - name: Set APT Cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HOME }}/apt-cache
+          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/kernel_builder.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
+      - name: Set ccache Environment
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache/${{ matrix.device }}" >> $GITHUB_ENV
+          mkdir -p "$HOME/.ccache/${{ matrix.device }}"
+          echo "CCACHE setup for ${{ matrix.device }}"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ matrix.device }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-${{ matrix.device }}-
+
+      - name: Initialize ccache
+        run: |
+          if command -v ccache >/dev/null; then
+            ccache -M $CCACHE_MAXSIZE
+            ccache -s
+          else
+            echo "ccache not installed, skipping initialization"
+          fi
+
       - name: Install Dependencies
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y build-essential git curl wget bison flex zip bc cpio libssl-dev libncurses-dev gcc python3 python3-pip ccache
+          sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
+          sudo apt -o Dir::Cache="$HOME/apt-cache" update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt -o Dir::Cache="$HOME/apt-cache" install -yq --no-install-recommends \
+            build-essential git curl wget bison flex zip bc cpio libssl-dev libncurses-dev gcc python3 python3-pip ccache
 
+      - uses: actions/checkout@v4
+      
       - name: Clean workspace
         run: |
-          # 强制清理KernelSU目录
-          rm -rf out/ AnyKernel3*.zip Kernel_*.zip KernelSU SukiSU-Ultra
+          rm -rf out/ AnyKernel3*.zip Kernel_*.zip
           ccache -C
           rm -rf *.o *.mod *.order *.symvers *.cmd
           rm -rf toolchain/proton-clang
@@ -153,68 +188,111 @@ jobs:
         run: |
           mkdir -p toolchain
           cd toolchain
-          wget https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.zip
-          unzip 20210522.zip
+          wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.zip
+          unzip -q 20210522.zip
           mv proton-clang-20210522 proton-clang
           rm proton-clang/bin/ld 20210522.zip
-
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache_mikernel
-          key: ${{ runner.os }}-ccache-${{ matrix.device }}-${{ github.sha }}
-          restore-keys: ${{ runner.os }}-ccache-${{ matrix.device }}-
-
-      # 添加SukiSU Ultra支持
-      - name: Setup SukiSU Ultra
-        if: ${{ env.KERNELSU_VER == 'sukisu-ultra' }}
-        run: |
-          # 确保清理旧目录
-          rm -rf KernelSU SukiSU-Ultra
           
-          META="${{ env.KSU_META }}"
+      - name: Set up SukiSU Ultra
+        if: ${{ github.event.inputs.kernelsu_version == 'sukisu-ultra' }}
+        run: |
+          META="${{ github.event.inputs.kernelsu_meta }}"
           BRANCH_NAME="${META%%/*}"
           CUSTOM_TAG="${META#*/}"
-          
-          echo "分支名: $BRANCH_NAME"
-          echo "自定义版本标识: $CUSTOM_TAG"
+          echo "Branch: $BRANCH_NAME"
+          echo "Custom tag: $CUSTOM_TAG"
 
-          # 使用正确的仓库URL
-          git clone --depth=1 --branch=$BRANCH_NAME https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
-          mv SukiSU-Ultra KernelSU
-          
-          cd KernelSU
-          KSU_API_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/$BRANCH_NAME/kernel/Makefile" | \
-            grep -m1 "KSU_VERSION_API :=" | awk -F'= ' '{print $2}' | tr -d '[:space:]')
-          [[ -z "$KSU_API_VERSION" ]] && KSU_API_VERSION="3.1.8"
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$BRANCH_NAME"
+          cd ./KernelSU
 
+          # 获取KSU_API_VERSION - 使用更可靠的解析方法
+          KSU_API_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/$BRANCH_NAME/kernel/Makefile" | 
+            awk -F':=' '/KSU_VERSION_API[[:space:]]:=/{print $2}' | tr -d '[:space:]' || true)
+          
+          # 版本验证 - 添加详细错误处理
+          if [[ -z "$KSU_API_VERSION" ]]; then
+            echo "::warning::Failed to parse KSU_API_VERSION, using default"
+            KSU_API_VERSION="3.1.8"
+          fi
+          
+          # 确保版本格式有效
+          if [[ ! "$KSU_API_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::Invalid KSU_API_VERSION format: $KSU_API_VERSION, using default"
+            KSU_API_VERSION="3.1.8"
+          fi
+          
           echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
 
-          KSU_VERSION_FULL="v$KSU_API_VERSION-$CUSTOM_TAG@$BRANCH_NAME"
-          echo "KSU_VERSION_FULL=$KSU_VERSION_FULL" >> $GITHUB_ENV
+          GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+          echo "GIT_HASH=$GIT_HASH"
 
-          # 直接修改Makefile
-          cat << EOF > kernel/Makefile
-          # SukiSU-Ultra自动配置
-          KSU_VERSION_API := $KSU_API_VERSION
-          KSU_VERSION_FULL := $KSU_VERSION_FULL
-          EOF
+          # 构建版本字符串 - 添加空值保护
+          if [[ -z "$CUSTOM_TAG" || "$CUSTOM_TAG" == "$BRANCH_NAME" ]]; then
+            VERSION_FULL="v${KSU_API_VERSION}-${GIT_HASH}@${BRANCH_NAME}"
+          else
+            VERSION_FULL="v${KSU_API_VERSION}-${CUSTOM_TAG}@${BRANCH_NAME}[${GIT_HASH}]"
+          fi
+
+          # 更新Makefile中的版本信息 - 使用更可靠的方法
+          # 删除旧的定义
+          sed -i '/define get_ksu_version_full/,/endef/d' kernel/Makefile
+          sed -i '/KSU_VERSION_API :=/d' kernel/Makefile
+          sed -i '/KSU_VERSION_FULL :=/d' kernel/Makefile
+          
+          # 在REPO_OWNER行后插入新定义
+          awk -v version_full="$VERSION_FULL" -v api_version="$KSU_API_VERSION" '
+            /REPO_OWNER :=/ {
+                print $0
+                print "define get_ksu_version_full"
+                print version_full
+                print "endef"
+                print ""
+                print "KSU_VERSION_API := " api_version
+                print "KSU_VERSION_FULL := " version_full
+                inserted=1
+                next
+            }
+            1
+            END {
+                if (!inserted) {
+                    print "define get_ksu_version_full"
+                    print version_full
+                    print "endef"
+                    print ""
+                    print "KSU_VERSION_API := " api_version
+                    print "KSU_VERSION_FULL := " version_full
+                }
+            }
+          ' kernel/Makefile > kernel/Makefile.tmp && mv kernel/Makefile.tmp kernel/Makefile
+
+          # 计算KSU版本号
+          MAIN_COUNT=$(git rev-list --count main 2>/dev/null || echo "13000")
+          KSU_VERSION=$(($MAIN_COUNT + 10700))
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+
+          echo "::group::Final Makefile preview"
+          grep -A10 "REPO_OWNER" kernel/Makefile
+          echo "::endgroup::"
           
           cd ..
-          echo "::group:: SukiSU Ultra配置预览"
-          cat KernelSU/kernel/Makefile
-          echo "::endgroup::"
 
       - name: Build Kernel
-        env:
-          KSU_VERSION_FULL: ${{ env.KSU_VERSION_FULL }}
         run: |
+          # 确保脚本可执行
+          chmod +x build.sh
+          
+          # 更新工具链路径
           sed -i "s|TOOLCHAIN_PATH=\$HOME/toolchain/proton-clang/bin|TOOLCHAIN_PATH=$(pwd)/toolchain/proton-clang/bin|" build.sh
+          
+          # 执行构建
           bash build.sh "${{ matrix.device }}" \
-            "${{ env.KERNELSU_VER }}" \
-            "${{ env.ADD_FUNC }}" \
-            "${{ env.TARGET_SYSTEM }}" \
-            "${{ env.KSU_META }}"
+            "${{ github.event.inputs.kernelsu_version }}" \
+            "${{ github.event.inputs.additional_function }}" \
+            "${{ github.event.inputs.system_version }}" \
+            "${{ env.KSU_API_VERSION }}"
+          
+          # 检查缓存状态
+          ccache -s
 
       - name: Generate Device Name Mapping
         id: device_mapping
@@ -226,23 +304,40 @@ jobs:
             ["dagu"]="XiaomiPad5Pro12.4" ["pipa"]="XiaomiPad6"
           )
           DEVICE="${{ matrix.device }}"
-          echo "device_name=${device_map[$DEVICE]}" >> $GITHUB_OUTPUT
-          echo "DEVICE_NAME=${device_map[$DEVICE]}" >> $GITHUB_ENV
+          DEVICE_NAME="${device_map[$DEVICE]}"
+          
+          if [ -z "$DEVICE_NAME" ]; then
+            echo "::error::No device name mapping for $DEVICE"
+            exit 1
+          fi
+          
+          echo "device_name=$DEVICE_NAME" >> $GITHUB_OUTPUT
+          echo "DEVICE_NAME=$DEVICE_NAME" >> $GITHUB_ENV
 
       - name: Find and Rename Kernel ZIP
         run: |
+          # 查找构建生成的ZIP文件
           ZIP_FILE=$(find . -name "Kernel_*_${{ matrix.device }}_*.zip" -print -quit)
+          
+          # 回退查找AnyKernel3生成的ZIP
           if [ -z "$ZIP_FILE" ]; then
             ZIP_FILE=$(find . -name "AnyKernel3_${{ matrix.device }}*.zip" -print -quit)
           fi
+          
+          # 如果仍然找不到文件，报错退出
           if [ -z "$ZIP_FILE" ]; then
             echo "::error::No kernel file found for ${{ matrix.device }}!"
             exit 1
           fi
+          
+          # 重命名并设置环境变量
           DEVICE_NAME="${{ env.DEVICE_NAME }}"
           NEW_NAME="AnyKernel3-$DEVICE_NAME.zip"
           mv "$ZIP_FILE" "$NEW_NAME"
           echo "ZIP_PATH=$(pwd)/$NEW_NAME" >> $GITHUB_ENV
+
+      - name: Check Disk Space (Post-build)
+        run: df -h
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -261,7 +356,7 @@ jobs:
           
       - name: Prepare Release Files
         run: |
-          mkdir release
+          mkdir -p release
           find artifacts -name '*.zip' -exec cp {} release \;
           
       - name: Set Release Info
@@ -270,17 +365,17 @@ jobs:
           DEVICE_NAMES=$(ls release | cut -d'-' -f1 | sort -u | tr '\n' ',' | sed 's/,$//')
           echo "device_names=$DEVICE_NAMES" >> $GITHUB_OUTPUT
           
-          if [ "${{ github.event_name }}" == "schedule" ]; then
-            SYSTEM_VERSION="miui"
-            KERNELSU_VERSION="sukisu-ultra"
-            ADDITIONAL_FUNCTION="susfs-kpm"
-          else
-            SYSTEM_VERSION="${{ github.event.inputs.system_version || 'miui' }}"
-            KERNELSU_VERSION="${{ github.event.inputs.kernelsu_version || 'ksu' }}"
-            ADDITIONAL_FUNCTION="${{ github.event.inputs.additional_function || 'no' }}"
-          fi
-          
-          echo "RELEASE_BODY=## Kernel Build\n- **Devices:** $DEVICE_NAMES\n- **System:** $SYSTEM_VERSION\n- **KernelSU:** $KERNELSU_VERSION\n- **Additional:** $ADDITIONAL_FUNCTION\n- **Build Date:** $(date +%Y-%m-%d)" >> $GITHUB_ENV
+          RELEASE_BODY=$(cat <<EOF
+          ## Kernel Build
+          - **Devices:** $DEVICE_NAMES
+          - **System:** ${{ github.event.inputs.system_version }}
+          - **KernelSU:** ${{ github.event.inputs.kernelsu_version }}
+          - **Build Date:** $(date +%Y-%m-%d)
+          EOF
+          )
+          echo "RELEASE_BODY<<EOF" >> $GITHUB_ENV
+          echo "$RELEASE_BODY" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
