@@ -5,29 +5,32 @@
 # Ensure the script exits on error
 set -e
 
+# 确保正确设置KSU_VERSION_FULL
 if [ -n "$KSU_VERSION_FULL" ]; then
     echo "使用自定义KSU版本: $KSU_VERSION_FULL"
     KSU_ZIP_STR="$KSU_VERSION_FULL"
 fi
 
-TOOLCHAIN_PATH=$HOME/toolchain/proton-clang/bin
+TOOLCHAIN_PATH=$(pwd)/toolchain/proton-clang/bin
 GIT_COMMIT_ID=$(git rev-parse --short=13 HEAD)
 TARGET_DEVICE=$1
+KSU_VERSION=$2
+ADDITIONAL=$3
+TARGET_SYSTEM=$4
+KSU_META=$5  # 新增第5个参数用于KSU_META
+
+# 确保SukiSU-Ultra正确使用
+if [[ "$KSU_VERSION" == "sukisu-ultra" && -z "$KSU_META" ]]; then
+    KSU_META="susfs-main/Numbersf"
+fi
 
 if [ -z "$1" ]; then
     echo "Error: No argument provided, please specific a target device." 
-    echo "If you need KernelSU, please add [ksu] as the second arg."
-    echo "Examples:"
-    echo "Build for lmi(K30 Pro/POCO F2 Pro) without KernelSU:"
-    echo "    bash build.sh lmi"
-    echo "Build for umi(Mi10) with KernelSU:"
-    echo "    bash build.sh umi ksu"
     exit 1
 fi
 
 if [ ! -d $TOOLCHAIN_PATH ]; then
     echo "TOOLCHAIN_PATH [$TOOLCHAIN_PATH] does not exist."
-    echo "Please ensure the toolchain is there, or change TOOLCHAIN_PATH in the script to your toolchain path."
     exit 1
 fi
 
@@ -39,24 +42,18 @@ if ! command -v aarch64-linux-gnu-ld >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! command -v arm-linux-gnueabi-ld >/dev/null 2>&1; then
-    echo "[arm-linux-gnueabi-ld] does not exist, please check your environment."
-    exit 1
-fi
-
 if ! command -v clang >/dev/null 2>&1; then
     echo "[clang] does not exist, please check your environment."
     exit 1
 fi
 
-# Enable ccache for speed up compiling 
 export CCACHE_DIR="$HOME/.cache/ccache_mikernel" 
 export CC="ccache gcc"
 export CXX="ccache g++"
 export PATH="/usr/lib/ccache:$PATH"
 echo "CCACHE_DIR: [$CCACHE_DIR]"
 
-MAKE_ARGS="ARCH=arm64 SUBARCH=arm64 O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
+MAKE_ARGS="ARCH=arm64 SUBARCH=arm64 O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
 
 if [ "$1" == "j1" ]; then
     make $MAKE_ARGS -j1
@@ -70,22 +67,16 @@ fi
 
 if [ ! -f "arch/arm64/configs/${TARGET_DEVICE}_defconfig" ]; then
     echo "No target device [${TARGET_DEVICE}] found."
-    echo "Avaliable defconfigs, please choose one target from below down:"
     ls arch/arm64/configs/*_defconfig
     exit 1
 fi
 
-# Check clang is existing.
 echo "[clang --version]:"
 clang --version
 
-# Initialize variable
 KERNEL_SRC=$(pwd)
 SuSFS_ENABLE=0
 KPM_ENABLE=0
-KSU_VERSION=$2
-ADDITIONAL=$3
-TARGET_SYSTEM=$4
 
 echo "TARGET_DEVICE: $TARGET_DEVICE"
 
@@ -105,7 +96,53 @@ else
     echo "The additional function is not enabled"
 fi
 
-# 修改：优先使用自定义KSU版本标识
+# SukiSU-Ultra特殊处理
+if [ "$KSU_VERSION" == "sukisu-ultra" ]; then
+    echo "===== 处理SukiSU-Ultra ====="
+    # 使用KSU_META参数
+    BRANCH_NAME="${KSU_META%%/*}"
+    CUSTOM_TAG="${KSU_META#*/}"
+    
+    echo "分支名: $BRANCH_NAME"
+    echo "自定义版本标识: $CUSTOM_TAG"
+    
+    # 确保目录存在
+    if [ ! -d "KernelSU" ]; then
+        echo "下载SukiSU-Ultra: $BRANCH_NAME"
+        git clone --depth=1 --branch=$BRANCH_NAME https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
+        mv SukiSU-Ultra KernelSU
+    else
+        echo "使用已有的SukiSU-Ultra目录"
+    fi
+    
+    cd KernelSU
+    KSU_API_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/$BRANCH_NAME/kernel/Makefile" | \
+        grep -m1 "KSU_VERSION_API :=" | awk -F'= ' '{print $2}' | tr -d '[:space:]')
+    [[ -z "$KSU_API_VERSION" ]] && KSU_API_VERSION="3.1.7"
+    
+    echo "KSU_API_VERSION=$KSU_API_VERSION"
+    
+    KSU_VERSION_FULL="v$KSU_API_VERSION-$CUSTOM_TAG@$BRANCH_NAME"
+    echo "KSU_VERSION_FULL=$KSU_VERSION_FULL"
+    
+    # 直接写入Makefile
+    cat << EOF > kernel/Makefile
+# SukiSU-Ultra自动配置
+KSU_VERSION_API := $KSU_API_VERSION
+KSU_VERSION_FULL := $KSU_VERSION_FULL
+EOF
+    
+    cd ..
+    
+    if [ "$SuSFS_ENABLE" -eq 1 ]; then
+        KSU_ZIP_STR="SukiSU-Ultra_SuSFS"
+    else
+        KSU_ZIP_STR="SukiSU-Ultra"
+    fi
+    echo "KSU_ZIP_STR设置为: $KSU_ZIP_STR"
+fi
+
+# 其他KSU版本处理
 if [ "$KSU_VERSION" == "ksu" ]; then
     KSU_ZIP_STR=${KSU_ZIP_STR:-"KernelSU"}
     echo "KSU is enabled"
@@ -129,29 +166,9 @@ elif [ "$KSU_VERSION" == "sukisu" ]; then
     KSU_ZIP_STR=${KSU_ZIP_STR:-"SukiSU"}
     echo "SukiSU is enabled"
     curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s dev
-elif [[ "$KSU_VERSION" == "sukisu-ultra" && "$SuSFS_ENABLE" -eq 1 ]]; then
-    # 优先使用自定义版本
-    KSU_ZIP_STR=${KSU_ZIP_STR:-"SukiSU-Ultra_SuSFS"}
-    echo "SukiSU-Ultra && SuSFS is enabled"
-    # 检查是否已经设置过KernelSU
-    if [ ! -d "$KERNEL_SRC/KernelSU" ]; then
-        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-    fi
-elif [ "$KSU_VERSION" == "sukisu-ultra" ]; then
-    # 优先使用自定义版本
-    KSU_ZIP_STR=${KSU_ZIP_STR:-"SukiSU-Ultra"}
-    echo "SukiSU-Ultra is enabled"
-    # 检查是否已经设置过KernelSU
-    if [ ! -d "$KERNEL_SRC/KernelSU" ]; then
-        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
-    fi
-else
-    KSU_ZIP_STR=${KSU_ZIP_STR:-"NoKernelSU"}
-    echo "KSU is disabled"
 fi
 
-echo "Cleaning..."
-
+echo "开始构建: $TARGET_DEVICE"
 rm -rf out/
 rm -rf anykernel/
 
