@@ -195,10 +195,10 @@ jobs:
 
           # 直接修改Makefile
           cat << EOF > kernel/Makefile
-# SukiSU-Ultra自动配置
-KSU_VERSION_API := $KSU_API_VERSION
-KSU_VERSION_FULL := $KSU_VERSION_FULL
-EOF
+          # SukiSU-Ultra自动配置
+          KSU_VERSION_API := $KSU_API_VERSION
+          KSU_VERSION_FULL := $KSU_VERSION_FULL
+          EOF
           
           cd ..
           echo "::group:: SukiSU Ultra配置预览"
