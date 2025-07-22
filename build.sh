@@ -343,14 +343,15 @@ SET_CONFIG(){
 
 Image_Repack(){
     if [ -f "out/arch/arm64/boot/Image" ]; then
-        echo "The file [out/arch/arm64/boot/Image] exists. AOSP Build successfully."
+        echo "The file [out/arch/arm64/boot/Image] exists. Build successful."
     else
-        echo "The file [out/arch/arm64/boot/Image] does not exist. Seems AOSP build failed."
+        echo "The file [out/arch/arm64/boot/Image] does not exist. Build failed."
         exit 1
     fi
 
-    # KPM Patch
+    # KPM Patch - 仅对SukiSU-Ultra且启用了KPM时应用
     if [[ "$KPM_ENABLE" -eq 1 && "$KSU_VERSION" == "sukisu-ultra" ]]; then
+        echo "Applying KPM patch for SukiSU-Ultra..."
         Patch_KPM
     fi
 
@@ -364,7 +365,6 @@ Image_Repack(){
     fi
 
     rm -rf anykernel/kernels/
-
     mkdir -p anykernel/kernels/
 
     cp out/arch/arm64/boot/Image anykernel/kernels/
@@ -372,10 +372,19 @@ Image_Repack(){
 
     cd anykernel 
 
+    # 更新ZIP文件名格式
     if [ "$1" == "MIUI" ]; then
-        ZIP_FILENAME=Kernel_MIUI_${TARGET_DEVICE}_${KSU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip
+        ZIP_FILENAME="Kernel_MIUI_${TARGET_DEVICE}_${KSU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip"
     else
-        ZIP_FILENAME=Kernel_AOSP_${TARGET_DEVICE}_${KSU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip
+        ZIP_FILENAME="Kernel_AOSP_${TARGET_DEVICE}_${KSU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip"
+    fi
+
+    # 添加SukiSU-Ultra特定文件
+    if [[ "$KSU_VERSION" == "sukisu-ultra" && "$KPM_ENABLE" -eq 1 ]]; then
+        echo "Adding KPM module for SukiSU-Ultra..."
+        mkdir -p modules
+        find ../out -name 'kpm.ko' -exec cp {} modules/ \;
+        zip -r9 $ZIP_FILENAME modules
     fi
 
     zip -r9 $ZIP_FILENAME ./* -x .git .gitignore out/ ./*.zip
@@ -387,19 +396,27 @@ Image_Repack(){
 
 Patch_KPM(){
     cd out/arch/arm64/boot
-    curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/refs/heads/main/kpm/patch_linux" -o patch
-    chmod +x patch
-    ./patch
-    if [ $? -eq 0 ]; then
-        rm -f Image
-        mv oImage Image
-        echo "Image file repair complete"
+    
+    echo "Downloading KPM patch..."
+    if curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/main/kpm/patch_linux" -o patch; then
+        chmod +x patch
+        echo "Applying KPM patch..."
+        if ./patch; then
+            if [ -f "oImage" ]; then
+                rm -f Image
+                mv oImage Image
+                echo "KPM patch applied successfully"
+            else
+                echo "::warning::Patch created oImage but file not found"
+            fi
+        else
+            echo "::warning::KPM patch application failed, using original Image"
+        fi
     else
-        echo "KPM Patch Failed, Use Original Image"
+        echo "::warning::Failed to download KPM patch, skipping"
     fi
     
     cd $KERNEL_SRC
-
 }
 
 if [ "$TARGET_SYSTEM" == "aosp" ];then
