@@ -76,10 +76,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      # 添加输出以传递定时构建参数
       build_params: ${{ steps.set-build-params.outputs.build_params }}
     steps:
-      # 设置定时构建的默认参数
       - name: Set build parameters for scheduled runs
         id: set-build-params
         if: ${{ github.event_name == 'schedule' }}
@@ -88,10 +86,9 @@ jobs:
           echo "system_version=miui" >> $GITHUB_OUTPUT
           echo "kernelsu_version=sukisu-ultra" >> $GITHUB_OUTPUT
           echo "additional_function=susfs-kpm" >> $GITHUB_OUTPUT
-          echo "KSU_META=susfs-main/敲击岁月" >> $GITHUB_OUTPUT
+          echo "KSU_META=susfs-main/酷安@宝明v" >> $GITHUB_OUTPUT
           echo "build_params=true" >> $GITHUB_OUTPUT
           
-      # 为手动触发设置参数
       - name: Set parameters for manual runs
         id: set-manual-params
         if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -103,10 +100,8 @@ jobs:
           echo "KSU_META=${{ github.event.inputs.KSU_META || 'susfs-main/Numbersf' }}" >> $GITHUB_OUTPUT
           echo "build_params=true" >> $GITHUB_OUTPUT
 
-      # 设置设备矩阵
       - id: set-matrix
         run: |
-          # 使用前面步骤设置的参数
           DEVICES="${{ steps.set-manual-params.outputs.target_devices || steps.set-build-params.outputs.target_devices }}"
           if [ "$DEVICES" == "all" ]; then
             DEVICES="munch,lmi,umi,psyche,thyme,cmi,cas,apollo,alioth,elish,enuma,dagu,pipa"
@@ -124,8 +119,6 @@ jobs:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
-      
-      # 使用准备好的参数
       TARGET_SYSTEM: ${{ needs.prepare.outputs.system_version || 'miui' }}
       KERNELSU_VER: ${{ needs.prepare.outputs.kernelsu_version || 'ksu' }}
       ADD_FUNC: ${{ needs.prepare.outputs.additional_function || 'no' }}
@@ -141,7 +134,8 @@ jobs:
 
       - name: Clean workspace
         run: |
-          rm -rf out/ AnyKernel3*.zip Kernel_*.zip
+          # 强制清理KernelSU目录
+          rm -rf out/ AnyKernel3*.zip Kernel_*.zip KernelSU SukiSU-Ultra
           ccache -C
           rm -rf *.o *.mod *.order *.symvers *.cmd
           rm -rf toolchain/proton-clang
@@ -172,40 +166,44 @@ jobs:
           restore-keys: ${{ runner.os }}-ccache-${{ matrix.device }}-
 
       # 添加SukiSU Ultra支持
-      - name: Add SukiSU Ultra
+      - name: Setup SukiSU Ultra
         if: ${{ env.KERNELSU_VER == 'sukisu-ultra' }}
         run: |
+          # 确保清理旧目录
+          rm -rf KernelSU SukiSU-Ultra
+          
           META="${{ env.KSU_META }}"
           BRANCH_NAME="${META%%/*}"
           CUSTOM_TAG="${META#*/}"
+          
           echo "分支名: $BRANCH_NAME"
           echo "自定义版本标识: $CUSTOM_TAG"
 
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$BRANCH_NAME"
-          cd ./KernelSU
-
+          # 使用正确的仓库URL
+          git clone --depth=1 --branch=$BRANCH_NAME https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
+          mv SukiSU-Ultra KernelSU
+          
+          cd KernelSU
           KSU_API_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/$BRANCH_NAME/kernel/Makefile" | \
             grep -m1 "KSU_VERSION_API :=" | awk -F'= ' '{print $2}' | tr -d '[:space:]')
-          [[ -z "$KSU_API_VERSION" ]] && KSU_API_VERSION="3.1.8"
+          [[ -z "$KSU_API_VERSION" ]] && KSU_API_VERSION="3.1.7"
 
           echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
 
           KSU_VERSION_FULL="v$KSU_API_VERSION-$CUSTOM_TAG@$BRANCH_NAME"
           echo "KSU_VERSION_FULL=$KSU_VERSION_FULL" >> $GITHUB_ENV
 
-          sed -i '/KSU_VERSION_API :=/d' kernel/Makefile
-          sed -i '/KSU_VERSION_FULL :=/d' kernel/Makefile
-
-          echo "KSU_VERSION_API := $KSU_API_VERSION" >> kernel/Makefile
-          echo "KSU_VERSION_FULL := $KSU_VERSION_FULL" >> kernel/Makefile
-
-          KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
-          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-
-          echo "::group:: 最终 Makefile 中版本信息预览"
-          grep -A5 "KSU_VERSION_API" kernel/Makefile
-          echo "::endgroup::"
+          # 直接修改Makefile
+          cat << EOF > kernel/Makefile
+# SukiSU-Ultra自动配置
+KSU_VERSION_API := $KSU_API_VERSION
+KSU_VERSION_FULL := $KSU_VERSION_FULL
+EOF
+          
           cd ..
+          echo "::group:: SukiSU Ultra配置预览"
+          cat KernelSU/kernel/Makefile
+          echo "::endgroup::"
 
       - name: Build Kernel
         env:
@@ -215,7 +213,8 @@ jobs:
           bash build.sh "${{ matrix.device }}" \
             "${{ env.KERNELSU_VER }}" \
             "${{ env.ADD_FUNC }}" \
-            "${{ env.TARGET_SYSTEM }}"
+            "${{ env.TARGET_SYSTEM }}" \
+            "${{ env.KSU_META }}"
 
       - name: Generate Device Name Mapping
         id: device_mapping
@@ -271,7 +270,6 @@ jobs:
           DEVICE_NAMES=$(ls release | cut -d'-' -f1 | sort -u | tr '\n' ',' | sed 's/,$//')
           echo "device_names=$DEVICE_NAMES" >> $GITHUB_OUTPUT
           
-          # 获取构建参数
           if [ "${{ github.event_name }}" == "schedule" ]; then
             SYSTEM_VERSION="miui"
             KERNELSU_VERSION="sukisu-ultra"
